@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>V125S Meter</title>
+<style>
+  :root { --bg:#0b0d10; --fg:#e8eef5; --dim:#6b7785; --acc:#3ddc97; --warn:#ff5c5c; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif;
+         height:100vh; display:flex; flex-direction:column; padding:12px 16px; }
+  #top { display:flex; justify-content:space-between; align-items:center; }
+  button { background:var(--acc); color:#000; border:0; border-radius:8px; padding:10px 18px; font-size:16px; font-weight:700; }
+  #status { color:var(--dim); font-size:14px; }
+  #speed { font-size:34vw; font-weight:800; text-align:center; line-height:1; margin-top:2vh; font-variant-numeric:tabular-nums; }
+  .unit { text-align:center; color:var(--dim); font-size:5vw; margin-top:-1vh; }
+  #rpmwrap { height:22px; background:#1a1f26; border-radius:11px; overflow:hidden; margin:3vh 0 6px; }
+  #rpmbar { height:100%; width:0; background:var(--acc); transition:width .15s; }
+  #rpm { text-align:center; font-size:8vw; font-variant-numeric:tabular-nums; }
+  .row { display:flex; justify-content:space-around; margin-top:auto; padding-bottom:2vh; }
+  .cell { text-align:center; }
+  .cell .v { font-size:9vw; font-weight:700; font-variant-numeric:tabular-nums; }
+  .cell .l { color:var(--dim); font-size:4vw; }
+</style>
+</head>
+<body>
+<div id="top"><button id="btn">接続</button><span id="status">未接続</span></div>
+<div id="speed">--</div><div class="unit">km/h</div>
+<div id="rpmwrap"><div id="rpmbar"></div></div>
+<div id="rpm">-- rpm</div>
+<div class="row">
+  <div class="cell"><div class="v" id="fuel">--</div><div class="l">燃料 %</div></div>
+  <div class="cell"><div class="v" id="trip">--</div><div class="l">距離 km</div></div>
+</div>
+<script>
+// ===== 設定 =====
+const SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const CHAR_UUID    = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+const RPM_MAX      = 10000;
+const FUEL_EMPTY_MV = 300;   // 燃料空のときのADC(mV) 要調整
+const FUEL_FULL_MV  = 2800;  // 満タンのときのADC(mV) 要調整
+// ================
+const $ = id => document.getElementById(id);
+let device, wakeLock;
+
+function onData(e) {
+  // 受信形式: "速度,回転数,燃料mV,距離km"
+  const t = new TextDecoder().decode(e.target.value).trim().split(',');
+  if (t.length < 4) return;
+  const spd = parseFloat(t[0]), rpm = parseFloat(t[1]), mv = parseFloat(t[2]), trip = parseFloat(t[3]);
+  $('speed').textContent = Math.round(spd);
+  $('rpm').textContent = Math.round(rpm) + ' rpm';
+  const r = Math.min(rpm / RPM_MAX, 1);
+  $('rpmbar').style.width = (r * 100) + '%';
+  $('rpmbar').style.background = r > 0.85 ? 'var(--warn)' : 'var(--acc)';
+  const fuel = Math.max(0, Math.min(100, (mv - FUEL_EMPTY_MV) / (FUEL_FULL_MV - FUEL_EMPTY_MV) * 100));
+  $('fuel').textContent = Math.round(fuel);
+  $('trip').textContent = trip.toFixed(1);
+}
+
+async function connect() {
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SERVICE_UUID] }]
+    });
+    device.addEventListener('gattserverdisconnected', () => {
+      $('status').textContent = '切断。再接続します…';
+      setTimeout(reconnect, 1500);
+    });
+    await reconnect();
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {}
+  } catch (err) {
+    $('status').textContent = 'エラー: ' + err.message;
+  }
+}
+
+async function reconnect() {
+  try {
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SERVICE_UUID);
+    const ch = await svc.getCharacteristic(CHAR_UUID);
+    await ch.startNotifications();
+    ch.addEventListener('characteristicvaluechanged', onData);
+    $('status').textContent = '接続中: ' + device.name;
+  } catch (err) {
+    $('status').textContent = '再接続失敗: ' + err.message;
+    setTimeout(reconnect, 3000);
+  }
+}
+
+$('btn').onclick = connect;
+if (!navigator.bluetooth) $('status').textContent = 'このブラウザはWeb Bluetooth非対応です(Chromeを使用)';
+</script>
+</body>
+</html>
